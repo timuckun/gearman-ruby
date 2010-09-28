@@ -9,86 +9,147 @@ module Gearman
 #
 # == Description
 # A client for managing Gearman job servers.
-class Server
-  ##
-  # Create a new client.
-  #
-  # @param job_servers  "host:port"; either a single server or an array
-  # @param prefix       function name prefix (namespace)
-  def initialize(hostport)
-    @hostport = hostport  # "host:port"
-  end
-  attr_reader :hostport
+  class Server
+    ##
+    # Create a new client.
+    #
+    # @param job_servers  "host:port"; either a single server or an array
+    # @param prefix       function name prefix (namespace)
+    def initialize(servers)
 
-  ##
-  # Get a socket for a job server.
-  #
-  # @param hostport  job server "host:port"
-  # @return          a Socket
-  def socket(num_retries=3)
-    return @socket if @socket
-    num_retries.times do
-      begin
-        sock = TCPSocket.new(*hostport.split(':'))
-      rescue Exception
+      @servers = Array(servers) # "host:port"
+    end
+
+    attr_reader :servers
+
+    ##
+    # Get a socket for a job server.
+    #
+    # @param hostport  job server "host:port"
+    # @return          a Socket
+
+    def socket(hostport, num_retries=3)
+
+      num_retries.times do |i|
+        begin
+          sock = TCPSocket.new(*hostport.split(':'))
+        rescue Exception
+        else
+          return sock
+        end
+      end
+      #signal_bad_server(hostport)
+      nil
+      #raise RuntimeError, "Unable to connect to job server #{hostport}"
+    end
+
+    ##
+    # Sends a command to the server.
+    #
+    # @return a response string
+    def send_command(socket, msg)
+      response = ''
+      socket.puts(msg)
+      while true do
+        if (buf = socket.recv_nonblock(65536) rescue nil)
+          response << buf
+          return response if response =~ /\n.\n$/
+        end
+      end
+    end
+
+    ##
+    # Returns results of a 'status' command.
+    #
+    # @return a hash of abilities with queued, active and workers keys.
+    def status
+      result = {}
+      @servers.each do |server|       
+        sock=socket server
+        if sock.nil?
+          result[server] = "unable to connect to server" if sock.nil?
+        else
+          result[server] = {}
+          if response = send_command(sock, 'status')
+            response.split("\n").each do |line|
+              func, queue, running, workers = line.split /\s+/
+              result[server][func]={:queue => queue, :running => running, :workers => workers}
+            end
+          else
+            result[server][func] = 'No response from server when sent the status command'
+          end #if
+        end  #if
+
+
+      end #servers
+      result
+    end
+
+    ##
+    # parses a worker line from the 'workers' command
+    #
+    # @return a hash containing the worker information
+    def parse_worker_line(line)
+      
+      return {} if line == '.'
+      
+      parts =  line.split ' '
+      fd = parts.shift
+      host = parts.shift
+      name = parts.shift
+      if name == '-'
+        #this is a client
+        type = 'client'
+        name = nil
+        functions = Array.new()
+
+      elsif name == ':'
+        #this is a worker with no name
+        type = 'worker'
+        name = nil
+        functions = parts
       else
-        return @socket = sock
+        #worker  with name
+        #get rid of the colon
+        parts.shift
+        type = 'worker'
+        functions = parts
       end
-    end
-    raise RuntimeError, "Unable to connect to job server #{hostport}"
-  end
 
-  ##
-  # Sends a command to the server.
-  #
-  # @return a response string
-  def send_command(name)
-    response = ''
-    socket.puts(name)
-    while true do 
-      if buf = socket.recv_nonblock(65536) rescue nil
-        response << buf 
-        return response if response =~ /\n.\n$/
-      end
-    end
-  end
-  
-  ##
-  # Returns results of a 'status' command.
-  #
-  # @return a hash of abilities with queued, active and workers keys.
-  def status
-    status = {}
-    if response = send_command('status')
-      response.split("\n").each do |line|
-        if line.match /^([A-Za-z_]+)\t([A-Za-z_]+)\t(\d+)\t(\d+)\t(\d+)$/
-          (status[$1] ||= {})[$2] = { :queue => $3, :active => $4, :workers => $5 }
-        end
-      end
-    end
-    status
-  end
-  
-  ##
-  # Returns results of a 'workers' command.
-  #
-  # @return an array of worker hashes, containing host, status and functions keys.
-  def workers
-    workers = []
-    if response = send_command('workers')
-      response.split("\n").each do |line|
-        if line.match /^(\d+)\s([a-z0-9\:\.]+)\s([^\s]*)\s:\s([a-z_\s\t]+)$/
-          func_parts = $4.split(' ')
-          functions = []
-          while !func_parts.empty?
-            functions << func_parts.shift << '.' << func_parts.shift
-          end
-          workers << { :host => $2, :status => $3, :functions => functions }
-        end
-      end
-    end
-    workers
-  end
-end
+      {:type => type, :host => host, :name => name, :functions => functions}
 
-end
+    end
+
+    ##
+    # Returns results of a 'workers' command.
+    #
+    # @return an array of worker hashes, containing host, status and functions keys.
+    def workers
+      result = {}
+
+      @servers.each do |server|
+
+
+        sock=socket server
+        if sock.nil?
+          result[server] = "unable to connect to server" if sock.nil?
+
+        else
+          result[server] = {}
+          result[server][:workers] = []
+          if response = send_command(sock, 'workers')
+            response.split("\n").each do |line|
+              workers =   parse_worker_line line unless line == '.'
+              result[server][:workers] << workers
+            end
+          else
+            result[server][:workers] = "No response from server"
+
+          end #response
+        end #if
+      end #servers
+      result
+    end
+
+  end #server
+end #module
