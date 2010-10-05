@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 
 require 'socket'
-require 'gearman'
+require 'pp'
 
 module Gearman
 
@@ -64,7 +64,7 @@ module Gearman
     # @return a hash of abilities with queued, active and workers keys.
     def status
       result = {}
-      @servers.each do |server|       
+      @servers.each do |server|
         sock=socket server
         if sock.nil?
           result[server] = "unable to connect to server" if sock.nil?
@@ -72,16 +72,19 @@ module Gearman
           result[server] = {}
           if response = send_command(sock, 'status')
             response.split("\n").each do |line|
-              func, queue, running, workers = line.split /\s+/
-              result[server][func]={:queue => queue, :running => running, :workers => workers}
+              unless line == '.'
+                func, queue, running, workers = line.split /\s+/
+                result[server][func]={:queue => queue, :running => running, :workers => workers}
+              end
             end
           else
             result[server][func] = 'No response from server when sent the status command'
           end #if
-        end  #if
+        end #if
 
 
       end #servers
+
       result
     end
 
@@ -90,9 +93,10 @@ module Gearman
     #
     # @return a hash containing the worker information
     def parse_worker_line(line)
-      
+      puts line
+
       return {} if line == '.'
-      
+
       parts =  line.split ' '
       fd = parts.shift
       host = parts.shift
@@ -153,3 +157,11 @@ module Gearman
 
   end #server
 end #module
+
+
+if $0 == __FILE__
+  gearman_servers =  ["localhost:4730"]
+
+  pp Gearman::Server.new(gearman_servers).status
+
+end
